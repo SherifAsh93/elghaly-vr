@@ -19,7 +19,7 @@ import {
 } from "@react-three/drei";
 import * as THREE from "three";
 
-// --- 1. SMART CAMERA POSITIONING ---
+// --- 1. SMART POSITIONING (Instant Entry) ---
 function CameraManager() {
   const { camera, scene, controls } = useThree();
   useEffect(() => {
@@ -27,7 +27,8 @@ function CameraManager() {
     const box = new THREE.Box3().setFromObject(scene);
     const center = new THREE.Vector3();
     box.getCenter(center);
-    camera.position.set(center.x, 1.6, center.z + 0.5); // Human height inside
+    // Position at eye level inside the room
+    camera.position.set(center.x, 1.6, center.z + 0.5);
     if (controls) {
       (controls as any).target.set(center.x, 1.4, center.z);
       (controls as any).update();
@@ -36,36 +37,39 @@ function CameraManager() {
   return null;
 }
 
-// --- 2. REALISTIC VENEER SCENE ---
+// --- 2. VENEER SCENE (Fast & Selective) ---
 function Scene({ wallColor }: { wallColor: string }) {
   const { scene } = useGLTF("/room.glb");
 
-  const walls = useMemo(() => {
+  // PRE-SCAN: Identify paintable parts ONLY ONCE when model loads
+  const paintableWalls = useMemo(() => {
     const list: THREE.Mesh[] = [];
     if (!scene) return list;
-    const minY = new THREE.Box3().setFromObject(scene).min.y;
 
     scene.traverse((obj) => {
       if (obj instanceof THREE.Mesh) {
         const name = obj.name.toLowerCase();
-        const isFloor = name.includes("floor") || obj.position.y <= minY + 0.05;
-        const isProp =
+
+        // SURGICAL FILTER: Exclude everything that ISN'T a wall
+        const isFloor = name.includes("floor") || name.includes("ground");
+        const isFurniture =
           name.includes("sofa") ||
           name.includes("couch") ||
           name.includes("plant") ||
-          name.includes("lamp");
+          name.includes("lamp") ||
+          name.includes("shelf") ||
+          name.includes("cushion") ||
+          name.includes("frame");
+        const isCeiling = name.includes("ceiling") || name.includes("roof");
 
-        if (!isFloor && !isProp) {
+        if (!isFloor && !isFurniture && !isCeiling) {
+          // Prepare a single reusable material for this mesh
           const oldMat = obj.material as THREE.MeshStandardMaterial;
           const newMat = oldMat.clone();
-          newMat.name = "veneer_final";
-          // We clear the map to allow our chosen color to be the primary albedo
-          newMat.map = null;
-
-          // REALISM: Give it a "Satin Wood" finish
-          newMat.roughness = 0.45; // Not too shiny, not too matte
-          newMat.metalness = 0.02; // Very slight reflection
-
+          newMat.name = "active_veneer";
+          newMat.map = null; // Remove heavy textures for speed
+          newMat.roughness = 0.45; // Wood-like sheen
+          newMat.metalness = 0.02;
           obj.material = newMat;
           list.push(obj);
         }
@@ -74,25 +78,19 @@ function Scene({ wallColor }: { wallColor: string }) {
     return list;
   }, [scene]);
 
+  // INSTANT UPDATE: Change colors without re-scanning or re-cloning
   useEffect(() => {
-    // Convert hex to Three.js Color and handle Color Space
-    const colorObj = new THREE.Color(wallColor);
-
-    walls.forEach((mesh) => {
-      const mat = mesh.material as THREE.MeshStandardMaterial;
-      // IMPORTANT: Set color with sRGB space correction for accuracy
-      mat.color.copy(colorObj);
-      mat.color.convertSRGBToLinear();
-      mat.needsUpdate = true;
+    const colorObj = new THREE.Color(wallColor).convertSRGBToLinear();
+    paintableWalls.forEach((mesh) => {
+      (mesh.material as THREE.MeshStandardMaterial).color.copy(colorObj);
     });
-  }, [walls, wallColor]);
+  }, [paintableWalls, wallColor]);
 
   return (
     <group>
       <Environment preset="apartment" />
       <ambientLight intensity={0.5} />
-      {/* Directional light to create highlights on the veneer sheen */}
-      <directionalLight position={[5, 5, 5]} intensity={1.5} castShadow />
+      <directionalLight position={[5, 5, 5]} intensity={1.2} />
       <primitive object={scene} />
       <CameraManager />
       <ContactShadows opacity={0.4} scale={10} blur={2} />
@@ -100,7 +98,7 @@ function Scene({ wallColor }: { wallColor: string }) {
   );
 }
 
-// --- 3. THE MAIN APP ---
+// --- 3. MAIN COMPONENT ---
 export default function MobileColorPicker() {
   const webcamRef = useRef<Webcam>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -118,9 +116,6 @@ export default function MobileColorPicker() {
     const clientX = e.touches ? e.touches[0].clientX : e.clientX;
     const clientY = e.touches ? e.touches[0].clientY : e.clientY;
 
-    const x = (clientX - rect.left) * (video.videoWidth / rect.width);
-    const y = (clientY - rect.top) * (video.videoHeight / rect.height);
-
     setTapPos({ x: clientX, y: clientY });
 
     const canvas = canvasRef.current;
@@ -130,24 +125,14 @@ export default function MobileColorPicker() {
     canvas.height = video.videoHeight;
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    // TECHNIQUE: Average a 5x5 block of pixels to remove camera "noise"
-    const size = 5;
-    const imgData = ctx.getImageData(x - 2, y - 2, size, size).data;
-    let r = 0,
-      g = 0,
-      b = 0;
-    for (let i = 0; i < imgData.length; i += 4) {
-      r += imgData[i];
-      g += imgData[i + 1];
-      b += imgData[i + 2];
-    }
-    const count = imgData.length / 4;
-    const hex = `#${(
-      (1 << 24) +
-      (Math.round(r / count) << 16) +
-      (Math.round(g / count) << 8) +
-      Math.round(b / count)
-    )
+    // Average pixels to reduce camera noise
+    const scaleX = video.videoWidth / rect.width;
+    const scaleY = video.videoHeight / rect.height;
+    const x = (clientX - rect.left) * scaleX;
+    const y = (clientY - rect.top) * scaleY;
+
+    const pixel = ctx.getImageData(x, y, 1, 1).data;
+    const hex = `#${((1 << 24) + (pixel[0] << 16) + (pixel[1] << 8) + pixel[2])
       .toString(16)
       .slice(1)}`;
 
@@ -165,9 +150,19 @@ export default function MobileColorPicker() {
           ← BACK
         </button>
 
-        <Canvas gl={{ antialias: true, toneMapping: THREE.NoToneMapping }}>
+        {/* Performance: Antialias off on mobile for speed */}
+        <Canvas gl={{ antialias: false, toneMapping: THREE.NoToneMapping }}>
           <color attach="background" args={["#f3f4f6"]} />
-          <Suspense fallback={<Html center>Adjusting Veneer...</Html>}>
+          <Suspense
+            fallback={
+              <Html
+                center
+                className="font-bold opacity-50 uppercase tracking-widest"
+              >
+                Entering VR...
+              </Html>
+            }
+          >
             <Scene wallColor={color} />
           </Suspense>
           <OrbitControls makeDefault enablePan={false} />
@@ -178,7 +173,7 @@ export default function MobileColorPicker() {
             className="w-8 h-8 rounded-full border shadow-inner"
             style={{ backgroundColor: color }}
           />
-          <span className="font-black text-black uppercase tracking-widest text-sm">
+          <span className="font-black text-black uppercase text-sm tracking-widest">
             Veneer: {color}
           </span>
         </div>
@@ -194,11 +189,12 @@ export default function MobileColorPicker() {
           className="h-full w-full object-cover"
           onTouchStart={pickColor}
           onClick={pickColor}
+          videoConstraints={{ facingMode: "environment" }} // BACK CAMERA FIXED
         />
         <canvas ref={canvasRef} className="hidden" />
         {isCaptured && (
           <div
-            className="absolute w-12 h-12 border-4 border-white rounded-full -translate-x-1/2 -translate-y-1/2 shadow-2xl animate-pulse"
+            className="absolute w-12 h-12 border-4 border-white rounded-full -translate-x-1/2 -translate-y-1/2 shadow-2xl"
             style={{ left: tapPos.x, top: tapPos.y, backgroundColor: color }}
           />
         )}
@@ -212,7 +208,7 @@ export default function MobileColorPicker() {
             />
             <div>
               <p className="text-[10px] text-zinc-400 font-bold uppercase">
-                Material Tone
+                Selection
               </p>
               <p className="text-3xl font-mono font-black">
                 {color.toUpperCase()}
@@ -224,7 +220,7 @@ export default function MobileColorPicker() {
               onClick={() => setMode("vr")}
               className="bg-blue-600 text-white px-8 py-5 rounded-[2rem] font-bold shadow-lg"
             >
-              VR PREVIEW
+              VR VIEW
             </button>
           )}
         </div>

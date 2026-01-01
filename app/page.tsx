@@ -6,6 +6,7 @@ import React, {
   useCallback,
   Suspense,
   useEffect,
+  useMemo,
 } from "react";
 import Webcam from "react-webcam";
 import { Canvas, useThree } from "@react-three/fiber";
@@ -18,8 +19,8 @@ import {
 } from "@react-three/drei";
 import * as THREE from "three";
 
-// --- This script finds the center of your room and puts you in it ---
-function CameraAutoSetup() {
+// --- 1. THE POSITIONER (Instant teleport) ---
+function CameraManager() {
   const { camera, scene, controls } = useThree();
 
   useEffect(() => {
@@ -27,12 +28,9 @@ function CameraAutoSetup() {
     const box = new THREE.Box3().setFromObject(scene);
     const center = new THREE.Vector3();
     box.getCenter(center);
-
-    // Position camera inside at center, eye level (1.6m)
     camera.position.set(center.x, 1.6, center.z);
-
     if (controls) {
-      (controls as any).target.set(center.x, 1.4, center.z - 0.1);
+      (controls as any).target.set(center.x, 1.6, center.z - 0.1);
       (controls as any).update();
     }
   }, [scene, camera, controls]);
@@ -40,53 +38,56 @@ function CameraAutoSetup() {
   return null;
 }
 
+// --- 2. OPTIMIZED SCENE (Ultra Fast) ---
 function Scene({ wallColor }: { wallColor: string }) {
   const { scene } = useGLTF("/room.glb");
-  const [hovered, setHovered] = useState<string | null>(null);
 
-  // Apply color to the main walls automatically on load
-  useEffect(() => {
-    if (!scene) return;
+  // OPTIMIZATION: Scan the room ONLY ONCE when it first loads
+  const walls = useMemo(() => {
+    const list: THREE.Mesh[] = [];
+    if (!scene) return list;
+
+    const box = new THREE.Box3().setFromObject(scene);
+    const minY = box.min.y;
+
     scene.traverse((obj) => {
       if (obj instanceof THREE.Mesh) {
         const name = obj.name.toLowerCase();
-        // Automatic detection for the main big walls
-        if (
-          name.includes("wall") ||
-          name.includes("structure") ||
-          obj.scale.y > 1.5
-        ) {
-          applyColor(obj, wallColor);
+        // Identify walls by height and ignore floor/furniture
+        const isFloor = name.includes("floor") || obj.position.y <= minY + 0.05;
+        const isProp =
+          name.includes("sofa") ||
+          name.includes("couch") ||
+          name.includes("plant") ||
+          name.includes("lamp");
+
+        if (!isFloor && !isProp) {
+          // Prepare the material once
+          const oldMat = obj.material as THREE.MeshStandardMaterial;
+          const newMat = oldMat.clone();
+          newMat.name = "veneer_final";
+          newMat.map = null; // Remove heavy textures for speed
+          obj.material = newMat;
+          list.push(obj);
         }
       }
     });
-  }, [scene, wallColor]);
+    return list;
+  }, [scene]);
 
-  const applyColor = (mesh: THREE.Mesh, hex: string) => {
-    const mat = mesh.material as THREE.MeshStandardMaterial;
-    // Reuse material to prevent "Context Lost" memory leaks
-    if (mat.name !== "custom_veneer") {
-      mesh.material = mat.clone();
-      mesh.material.name = "custom_veneer";
-    }
-    (mesh.material as THREE.MeshStandardMaterial).color.set(hex);
-    (mesh.material as THREE.MeshStandardMaterial).roughness = 0.6; // Realistic wood finish
-  };
+  // OPTIMIZATION: Instant color update without re-scanning
+  useEffect(() => {
+    walls.forEach((mesh) => {
+      (mesh.material as THREE.MeshStandardMaterial).color.set(wallColor);
+    });
+  }, [walls, wallColor]);
 
   return (
-    <group
-      onPointerOver={(e) => (e.stopPropagation(), setHovered(e.object.name))}
-      onPointerOut={() => setHovered(null)}
-      onClick={(e) => (
-        e.stopPropagation(), applyColor(e.object as THREE.Mesh, wallColor)
-      )}
-    >
+    <group>
       <Environment preset="apartment" />
-      <ambientLight intensity={0.7} />
-      <pointLight position={[5, 5, 5]} intensity={1} />
-
+      <ambientLight intensity={0.8} />
       <primitive object={scene} />
-      <CameraAutoSetup />
+      <CameraManager />
     </group>
   );
 }
@@ -125,43 +126,33 @@ export default function MobileColorPicker() {
 
   if (mode === "vr") {
     return (
-      <div className="fixed inset-0 bg-[#e5e7eb] flex flex-col">
+      <div className="fixed inset-0 bg-white flex flex-col">
         <button
           onClick={() => setMode("camera")}
-          className="absolute top-6 left-6 z-50 bg-black text-white px-6 py-3 rounded-2xl font-bold shadow-2xl"
+          className="absolute top-6 left-6 z-50 bg-black text-white px-6 py-3 rounded-2xl font-bold shadow-xl"
         >
-          ← EXIT VR
+          ← BACK
         </button>
 
-        <Canvas shadows>
-          {/* BACKGROUND: Soft grey instead of black hole */}
-          <color attach="background" args={["#e5e7eb"]} />
-
-          <Suspense fallback={<Html center>Loading 3D...</Html>}>
+        <Canvas
+          shadows
+          gl={{ antialias: false, powerPreference: "high-performance" }}
+        >
+          <color attach="background" args={["#f3f4f6"]} />
+          <Suspense fallback={<Html center>LOADING...</Html>}>
             <Scene wallColor={color} />
           </Suspense>
-
-          <OrbitControls
-            makeDefault
-            enablePan={false}
-            minPolarAngle={Math.PI / 3}
-            maxPolarAngle={Math.PI / 1.8}
-          />
+          <OrbitControls makeDefault enablePan={false} />
         </Canvas>
 
-        <div className="absolute bottom-10 left-1/2 -translate-x-1/2 bg-white/90 backdrop-blur-md px-8 py-4 rounded-3xl shadow-2xl border flex flex-col items-center gap-1">
-          <div className="flex items-center gap-3">
-            <div
-              className="w-5 h-5 rounded-full border"
-              style={{ backgroundColor: color }}
-            />
-            <span className="font-bold text-zinc-900 uppercase text-sm tracking-tight">
-              Veneer: {color}
-            </span>
-          </div>
-          <p className="text-[9px] font-bold text-zinc-400 uppercase">
-            Tip: Tap a wall to apply color
-          </p>
+        <div className="absolute bottom-10 left-1/2 -translate-x-1/2 bg-white/90 backdrop-blur-md px-8 py-4 rounded-full shadow-2xl flex items-center gap-4">
+          <div
+            className="w-5 h-5 rounded-full border"
+            style={{ backgroundColor: color }}
+          />
+          <span className="font-bold text-black uppercase text-xs">
+            Veneer: {color}
+          </span>
         </div>
       </div>
     );
@@ -171,26 +162,24 @@ export default function MobileColorPicker() {
     <div className="fixed inset-0 bg-black flex flex-col overflow-hidden">
       <Webcam
         ref={webcamRef}
-        audio={false}
         className="h-full w-full object-cover"
-        onClick={pickColor}
         onTouchStart={pickColor}
+        onClick={pickColor}
         videoConstraints={{ facingMode: "environment" }}
       />
       <canvas ref={canvasRef} className="hidden" />
-
-      <div className="bg-white p-10 rounded-t-[3.5rem] shadow-2xl flex flex-col items-center">
+      <div className="bg-white p-10 rounded-t-[3rem] shadow-2xl flex flex-col items-center">
         <div className="flex items-center justify-between w-full max-w-md">
           <div className="flex items-center gap-5">
             <div
-              className="w-16 h-16 rounded-2xl border-4"
+              className="w-16 h-16 rounded-3xl border-4"
               style={{ backgroundColor: color }}
             />
             <div>
-              <p className="text-[10px] text-zinc-400 font-bold uppercase">
-                Selection
+              <p className="text-[10px] text-zinc-400 font-bold uppercase tracking-widest leading-none mb-1">
+                Color
               </p>
-              <p className="text-3xl font-mono font-black">
+              <p className="text-3xl font-mono font-black text-zinc-900">
                 {color.toUpperCase()}
               </p>
             </div>
@@ -200,7 +189,7 @@ export default function MobileColorPicker() {
               onClick={() => setMode("vr")}
               className="bg-blue-600 text-white px-8 py-5 rounded-[2rem] font-bold shadow-xl active:scale-95 transition-all"
             >
-              PREVIEW
+              VIEW VR
             </button>
           )}
         </div>

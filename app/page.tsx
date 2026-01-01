@@ -19,7 +19,10 @@ import {
 } from "@react-three/drei";
 import * as THREE from "three";
 
-// --- 1. SMART POSITIONING (Instant Entry) ---
+// 1. PRELOAD the model outside the component so it starts downloading immediately
+// when the app opens, not when the button is clicked.
+useGLTF.preload("/room.glb");
+
 function CameraManager() {
   const { camera, scene, controls } = useThree();
   useEffect(() => {
@@ -27,7 +30,6 @@ function CameraManager() {
     const box = new THREE.Box3().setFromObject(scene);
     const center = new THREE.Vector3();
     box.getCenter(center);
-    // Position at eye level inside the room
     camera.position.set(center.x, 1.6, center.z + 0.5);
     if (controls) {
       (controls as any).target.set(center.x, 1.4, center.z);
@@ -37,20 +39,25 @@ function CameraManager() {
   return null;
 }
 
-// --- 2. VENEER SCENE (Fast & Selective) ---
 function Scene({ wallColor }: { wallColor: string }) {
   const { scene } = useGLTF("/room.glb");
 
-  // PRE-SCAN: Identify paintable parts ONLY ONCE when model loads
-  const paintableWalls = useMemo(() => {
-    const list: THREE.Mesh[] = [];
-    if (!scene) return list;
+  // Create a SINGLE shared material for all walls to save memory
+  const wallMaterial = useMemo(
+    () =>
+      new THREE.MeshStandardMaterial({
+        roughness: 0.6,
+        metalness: 0.1,
+      }),
+    []
+  );
+
+  useEffect(() => {
+    if (!scene) return;
 
     scene.traverse((obj) => {
       if (obj instanceof THREE.Mesh) {
         const name = obj.name.toLowerCase();
-
-        // SURGICAL FILTER: Exclude everything that ISN'T a wall
         const isFloor = name.includes("floor") || name.includes("ground");
         const isFurniture =
           name.includes("sofa") ||
@@ -63,42 +70,31 @@ function Scene({ wallColor }: { wallColor: string }) {
         const isCeiling = name.includes("ceiling") || name.includes("roof");
 
         if (!isFloor && !isFurniture && !isCeiling) {
-          // Prepare a single reusable material for this mesh
-          const oldMat = obj.material as THREE.MeshStandardMaterial;
-          const newMat = oldMat.clone();
-          newMat.name = "active_veneer";
-          newMat.map = null; // Remove heavy textures for speed
-          newMat.roughness = 0.45; // Wood-like sheen
-          newMat.metalness = 0.02;
-          obj.material = newMat;
-          list.push(obj);
+          obj.material = wallMaterial; // Assign shared material
         }
       }
     });
-    return list;
-  }, [scene]);
+  }, [scene, wallMaterial]);
 
-  // INSTANT UPDATE: Change colors without re-scanning or re-cloning
+  // Update shared material color
   useEffect(() => {
-    const colorObj = new THREE.Color(wallColor).convertSRGBToLinear();
-    paintableWalls.forEach((mesh) => {
-      (mesh.material as THREE.MeshStandardMaterial).color.copy(colorObj);
-    });
-  }, [paintableWalls, wallColor]);
+    wallMaterial.color.set(wallColor).convertSRGBToLinear();
+  }, [wallColor, wallMaterial]);
 
   return (
     <group>
-      <Environment preset="apartment" />
-      <ambientLight intensity={0.5} />
-      <directionalLight position={[5, 5, 5]} intensity={1.2} />
+      {/* 2. OPTIMIZATION: Use a simpler environment or lower resolution */}
+      <Environment preset="city" />
+      <ambientLight intensity={0.7} />
+      <directionalLight position={[5, 8, 5]} intensity={0.8} />
       <primitive object={scene} />
       <CameraManager />
-      <ContactShadows opacity={0.4} scale={10} blur={2} />
+      {/* 3. OPTIMIZATION: Disable expensive shadows on mobile if it still fails */}
+      <ContactShadows opacity={0.4} scale={10} blur={2.5} far={1.6} />
     </group>
   );
 }
 
-// --- 3. MAIN COMPONENT ---
 export default function MobileColorPicker() {
   const webcamRef = useRef<Webcam>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -115,7 +111,6 @@ export default function MobileColorPicker() {
     const rect = video.getBoundingClientRect();
     const clientX = e.touches ? e.touches[0].clientX : e.clientX;
     const clientY = e.touches ? e.touches[0].clientY : e.clientY;
-
     setTapPos({ x: clientX, y: clientY });
 
     const canvas = canvasRef.current;
@@ -125,7 +120,6 @@ export default function MobileColorPicker() {
     canvas.height = video.videoHeight;
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    // Average pixels to reduce camera noise
     const scaleX = video.videoWidth / rect.width;
     const scaleY = video.videoHeight / rect.height;
     const x = (clientX - rect.left) * scaleX;
@@ -135,96 +129,89 @@ export default function MobileColorPicker() {
     const hex = `#${((1 << 24) + (pixel[0] << 16) + (pixel[1] << 8) + pixel[2])
       .toString(16)
       .slice(1)}`;
-
     setColor(hex);
     setIsCaptured(true);
   }, []);
 
-  if (mode === "vr") {
-    return (
-      <div className="fixed inset-0 bg-[#f3f4f6] flex flex-col">
-        <button
-          onClick={() => setMode("camera")}
-          className="absolute top-8 left-8 z-50 bg-black text-white px-6 py-3 rounded-2xl font-bold shadow-2xl"
-        >
-          ← BACK
-        </button>
-
-        {/* Performance: Antialias off on mobile for speed */}
-        <Canvas gl={{ antialias: false, toneMapping: THREE.NoToneMapping }}>
-          <color attach="background" args={["#f3f4f6"]} />
-          <Suspense
-            fallback={
-              <Html
-                center
-                className="font-bold opacity-50 uppercase tracking-widest"
-              >
-                Entering VR...
-              </Html>
-            }
-          >
-            <Scene wallColor={color} />
-          </Suspense>
-          <OrbitControls makeDefault enablePan={false} />
-        </Canvas>
-
-        <div className="absolute bottom-10 left-1/2 -translate-x-1/2 bg-white/95 px-8 py-4 rounded-3xl shadow-2xl flex items-center gap-4 border">
-          <div
-            className="w-8 h-8 rounded-full border shadow-inner"
-            style={{ backgroundColor: color }}
-          />
-          <span className="font-black text-black uppercase text-sm tracking-widest">
-            Veneer: {color}
-          </span>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="fixed inset-0 bg-black flex flex-col overflow-hidden">
-      <div className="relative flex-1">
-        <Webcam
-          ref={webcamRef}
-          className="h-full w-full object-cover"
-          onTouchStart={pickColor}
-          onClick={pickColor}
-          videoConstraints={{ facingMode: "environment" }} // BACK CAMERA FIXED
-        />
-        <canvas ref={canvasRef} className="hidden" />
-        {isCaptured && (
-          <div
-            className="absolute w-12 h-12 border-4 border-white rounded-full -translate-x-1/2 -translate-y-1/2 shadow-2xl"
-            style={{ left: tapPos.x, top: tapPos.y, backgroundColor: color }}
+      {/* 4. OPTIMIZATION: Use conditional rendering for BOTH to ensure camera stops */}
+      {mode === "camera" ? (
+        <div className="relative flex-1">
+          <Webcam
+            ref={webcamRef}
+            className="h-full w-full object-cover"
+            onTouchStart={pickColor}
+            onClick={pickColor}
+            videoConstraints={{ facingMode: "environment" }}
+            // This ensures the camera stream is destroyed when the component unmounts
+            onUserMediaError={() => console.log("Camera error")}
           />
-        )}
-      </div>
-      <div className="bg-white p-10 rounded-t-[3.5rem] shadow-2xl flex flex-col items-center">
-        <div className="flex items-center justify-between w-full max-w-md">
-          <div className="flex items-center gap-5">
+          <canvas ref={canvasRef} className="hidden" />
+          {isCaptured && (
             <div
-              className="w-16 h-16 rounded-3xl border-4"
-              style={{ backgroundColor: color }}
+              className="absolute w-12 h-12 border-4 border-white rounded-full -translate-x-1/2 -translate-y-1/2"
+              style={{ left: tapPos.x, top: tapPos.y, backgroundColor: color }}
             />
-            <div>
-              <p className="text-[10px] text-zinc-400 font-bold uppercase">
-                Selection
-              </p>
-              <p className="text-3xl font-mono font-black">
-                {color.toUpperCase()}
-              </p>
+          )}
+
+          <div className="absolute bottom-0 left-0 right-0 bg-white p-10 rounded-t-[3.5rem] flex flex-col items-center">
+            <div className="flex items-center justify-between w-full max-w-md">
+              <div className="flex items-center gap-5">
+                <div
+                  className="w-16 h-16 rounded-3xl border-4"
+                  style={{ backgroundColor: color }}
+                />
+                <div>
+                  <p className="text-[10px] text-zinc-400 font-bold uppercase">
+                    Selection
+                  </p>
+                  <p className="text-3xl font-mono font-black">
+                    {color.toUpperCase()}
+                  </p>
+                </div>
+              </div>
+              {isCaptured && (
+                <button
+                  onClick={() => setMode("vr")}
+                  className="bg-blue-600 text-white px-8 py-5 rounded-[2rem] font-bold"
+                >
+                  VR VIEW
+                </button>
+              )}
             </div>
           </div>
-          {isCaptured && (
-            <button
-              onClick={() => setMode("vr")}
-              className="bg-blue-600 text-white px-8 py-5 rounded-[2rem] font-bold shadow-lg"
-            >
-              VR VIEW
-            </button>
-          )}
         </div>
-      </div>
+      ) : (
+        <div className="relative flex-1 bg-[#f3f4f6]">
+          <button
+            onClick={() => setMode("camera")}
+            className="absolute top-8 left-8 z-50 bg-black text-white px-6 py-3 rounded-2xl font-bold"
+          >
+            ← BACK
+          </button>
+
+          <Canvas
+            gl={{
+              antialias: false,
+              powerPreference: "high-performance",
+              preserveDrawingBuffer: false,
+            }}
+            dpr={[1, 1.5]} // Limit pixel ratio on high-res mobile screens
+          >
+            <Suspense fallback={<Html center>Loading 3D Scene...</Html>}>
+              <Scene wallColor={color} />
+            </Suspense>
+            <OrbitControls makeDefault />
+          </Canvas>
+
+          <div className="absolute bottom-10 left-1/2 -translate-x-1/2 bg-white/95 px-8 py-4 rounded-3xl border">
+            <span className="font-black text-black uppercase text-sm">
+              Veneer: {color}
+            </span>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

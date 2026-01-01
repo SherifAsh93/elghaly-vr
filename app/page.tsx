@@ -16,11 +16,11 @@ import {
   Environment,
   Html,
   ContactShadows,
+  Lightformer,
 } from "@react-three/drei";
 import * as THREE from "three";
 
-// 1. PRELOAD the model outside the component so it starts downloading immediately
-// when the app opens, not when the button is clicked.
+// Preload the model
 useGLTF.preload("/room.glb");
 
 function CameraManager() {
@@ -30,7 +30,7 @@ function CameraManager() {
     const box = new THREE.Box3().setFromObject(scene);
     const center = new THREE.Vector3();
     box.getCenter(center);
-    camera.position.set(center.x, 1.6, center.z + 0.5);
+    camera.position.set(center.x, 1.6, center.z + 1); // Slight offset for better view
     if (controls) {
       (controls as any).target.set(center.x, 1.4, center.z);
       (controls as any).update();
@@ -42,19 +42,19 @@ function CameraManager() {
 function Scene({ wallColor }: { wallColor: string }) {
   const { scene } = useGLTF("/room.glb");
 
-  // Create a SINGLE shared material for all walls to save memory
+  // MATERIAL CALIBRATION: Realistic Wall Paint
   const wallMaterial = useMemo(
     () =>
       new THREE.MeshStandardMaterial({
-        roughness: 0.6,
-        metalness: 0.1,
+        roughness: 0.85, // High roughness = Matte paint
+        metalness: 0.0, // Walls are never metallic
+        envMapIntensity: 0.5, // Reduce reflections on the wall
       }),
     []
   );
 
   useEffect(() => {
     if (!scene) return;
-
     scene.traverse((obj) => {
       if (obj instanceof THREE.Mesh) {
         const name = obj.name.toLowerCase();
@@ -70,27 +70,50 @@ function Scene({ wallColor }: { wallColor: string }) {
         const isCeiling = name.includes("ceiling") || name.includes("roof");
 
         if (!isFloor && !isFurniture && !isCeiling) {
-          obj.material = wallMaterial; // Assign shared material
+          obj.material = wallMaterial;
         }
       }
     });
   }, [scene, wallMaterial]);
 
-  // Update shared material color
   useEffect(() => {
+    // Convert hex to linear space for Three.js lighting math
     wallMaterial.color.set(wallColor).convertSRGBToLinear();
   }, [wallColor, wallMaterial]);
 
   return (
     <group>
-      {/* 2. OPTIMIZATION: Use a simpler environment or lower resolution */}
-      <Environment preset="city" />
-      <ambientLight intensity={0.7} />
-      <directionalLight position={[5, 8, 5]} intensity={0.8} />
+      {/* NEUTRAL LIGHTING: Prevents the walls from looking blue or yellow */}
+      <Environment resolution={256}>
+        <group rotation={[-Math.PI / 3, 0, 0]}>
+          <Lightformer
+            intensity={0.8}
+            rotation-x={Math.PI / 2}
+            position={[0, 5, -9]}
+            scale={[10, 10, 1]}
+          />
+          <Lightformer
+            intensity={2}
+            rotation-y={Math.PI / 2}
+            position={[-5, 1, -1]}
+            scale={[10, 2, 1]}
+          />
+          <Lightformer
+            intensity={2}
+            rotation-y={-Math.PI / 2}
+            position={[10, 1, 0]}
+            scale={[20, 2, 1]}
+          />
+        </group>
+      </Environment>
+
+      <ambientLight intensity={0.6} />
+      <directionalLight position={[5, 8, 5]} intensity={0.5} />
+
       <primitive object={scene} />
       <CameraManager />
-      {/* 3. OPTIMIZATION: Disable expensive shadows on mobile if it still fails */}
-      <ContactShadows opacity={0.4} scale={10} blur={2.5} far={1.6} />
+      {/* Shadow optimization: lower blur for mobile speed */}
+      <ContactShadows opacity={0.25} scale={10} blur={1.5} far={1.6} />
     </group>
   );
 }
@@ -125,7 +148,7 @@ export default function MobileColorPicker() {
     const x = (clientX - rect.left) * scaleX;
     const y = (clientY - rect.top) * scaleY;
 
-    const pixel = ctx.getImageData(x, y, 1, 1).data;
+    const pixel = ctx.getImageData(Math.floor(x), Math.floor(y), 1, 1).data;
     const hex = `#${((1 << 24) + (pixel[0] << 16) + (pixel[1] << 8) + pixel[2])
       .toString(16)
       .slice(1)}`;
@@ -135,7 +158,6 @@ export default function MobileColorPicker() {
 
   return (
     <div className="fixed inset-0 bg-black flex flex-col overflow-hidden">
-      {/* 4. OPTIMIZATION: Use conditional rendering for BOTH to ensure camera stops */}
       {mode === "camera" ? (
         <div className="relative flex-1">
           <Webcam
@@ -144,27 +166,25 @@ export default function MobileColorPicker() {
             onTouchStart={pickColor}
             onClick={pickColor}
             videoConstraints={{ facingMode: "environment" }}
-            // This ensures the camera stream is destroyed when the component unmounts
-            onUserMediaError={() => console.log("Camera error")}
           />
           <canvas ref={canvasRef} className="hidden" />
           {isCaptured && (
             <div
-              className="absolute w-12 h-12 border-4 border-white rounded-full -translate-x-1/2 -translate-y-1/2"
+              className="absolute w-12 h-12 border-4 border-white rounded-full -translate-x-1/2 -translate-y-1/2 shadow-lg"
               style={{ left: tapPos.x, top: tapPos.y, backgroundColor: color }}
             />
           )}
 
-          <div className="absolute bottom-0 left-0 right-0 bg-white p-10 rounded-t-[3.5rem] flex flex-col items-center">
+          <div className="absolute bottom-0 left-0 right-0 bg-white p-10 rounded-t-[3.5rem] flex flex-col items-center shadow-2xl">
             <div className="flex items-center justify-between w-full max-w-md">
               <div className="flex items-center gap-5">
                 <div
-                  className="w-16 h-16 rounded-3xl border-4"
+                  className="w-16 h-16 rounded-2xl border-4"
                   style={{ backgroundColor: color }}
                 />
                 <div>
-                  <p className="text-[10px] text-zinc-400 font-bold uppercase">
-                    Selection
+                  <p className="text-[10px] text-zinc-400 font-bold uppercase tracking-widest">
+                    Selected Color
                   </p>
                   <p className="text-3xl font-mono font-black">
                     {color.toUpperCase()}
@@ -174,7 +194,7 @@ export default function MobileColorPicker() {
               {isCaptured && (
                 <button
                   onClick={() => setMode("vr")}
-                  className="bg-blue-600 text-white px-8 py-5 rounded-[2rem] font-bold"
+                  className="bg-blue-600 text-white px-10 py-5 rounded-3xl font-bold shadow-xl active:scale-95 transition-transform"
                 >
                   VR VIEW
                 </button>
@@ -186,29 +206,42 @@ export default function MobileColorPicker() {
         <div className="relative flex-1 bg-[#f3f4f6]">
           <button
             onClick={() => setMode("camera")}
-            className="absolute top-8 left-8 z-50 bg-black text-white px-6 py-3 rounded-2xl font-bold"
+            className="absolute top-8 left-8 z-50 bg-white/90 backdrop-blur text-black px-6 py-3 rounded-2xl font-bold shadow-lg"
           >
-            ← BACK
+            ← RETAKE
           </button>
 
           <Canvas
+            // AgX ToneMapping is MUCH better for color accuracy than the default
             gl={{
               antialias: false,
               powerPreference: "high-performance",
-              preserveDrawingBuffer: false,
+              toneMapping: THREE.AgXToneMapping,
+              outputColorSpace: THREE.SRGBColorSpace,
             }}
-            dpr={[1, 1.5]} // Limit pixel ratio on high-res mobile screens
+            dpr={[1, 1.5]}
+            camera={{ fov: 45 }}
           >
-            <Suspense fallback={<Html center>Loading 3D Scene...</Html>}>
+            <Suspense fallback={<Html center>Optimizing Scene...</Html>}>
               <Scene wallColor={color} />
             </Suspense>
-            <OrbitControls makeDefault />
+            <OrbitControls
+              makeDefault
+              minPolarAngle={Math.PI / 4}
+              maxPolarAngle={Math.PI / 1.5}
+            />
           </Canvas>
 
-          <div className="absolute bottom-10 left-1/2 -translate-x-1/2 bg-white/95 px-8 py-4 rounded-3xl border">
-            <span className="font-black text-black uppercase text-sm">
-              Veneer: {color}
-            </span>
+          <div className="absolute bottom-10 left-1/2 -translate-x-1/2 bg-white/90 backdrop-blur px-8 py-4 rounded-3xl shadow-xl border border-white">
+            <div className="flex items-center gap-3">
+              <div
+                className="w-4 h-4 rounded-full"
+                style={{ backgroundColor: color }}
+              />
+              <span className="font-bold text-black uppercase text-sm tracking-tighter">
+                Paint: {color}
+              </span>
+            </div>
           </div>
         </div>
       )}

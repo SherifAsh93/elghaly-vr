@@ -5,115 +5,118 @@ import React, {
   useState,
   useCallback,
   Suspense,
-  useEffect,
   useMemo,
 } from "react";
 import Webcam from "react-webcam";
-import { Canvas, useThree } from "@react-three/fiber";
-import {
-  OrbitControls,
-  useGLTF,
-  Environment,
-  Html,
-  ContactShadows,
-  Lightformer,
-} from "@react-three/drei";
+import { Canvas } from "@react-three/fiber";
+import { OrbitControls, ContactShadows } from "@react-three/drei";
 import * as THREE from "three";
 
-// Preload the model
-useGLTF.preload("/room.glb");
-
-function CameraManager() {
-  const { camera, scene, controls } = useThree();
-  useEffect(() => {
-    if (!scene) return;
-    const box = new THREE.Box3().setFromObject(scene);
-    const center = new THREE.Vector3();
-    box.getCenter(center);
-    camera.position.set(center.x, 1.6, center.z + 1); // Slight offset for better view
-    if (controls) {
-      (controls as any).target.set(center.x, 1.4, center.z);
-      (controls as any).update();
-    }
-  }, [scene, camera, controls]);
-  return null;
-}
-
-function Scene({ wallColor }: { wallColor: string }) {
-  const { scene } = useGLTF("/room.glb");
-
-  // MATERIAL CALIBRATION: Realistic Wall Paint
-  const wallMaterial = useMemo(
+// Procedural room — no GLB needed, loads instantly
+function Room({ wallColor }: { wallColor: string }) {
+  const color = useMemo(() => new THREE.Color(wallColor), [wallColor]);
+  const wallMat = useMemo(
     () =>
       new THREE.MeshStandardMaterial({
-        roughness: 0.85, // High roughness = Matte paint
-        metalness: 0.0, // Walls are never metallic
-        envMapIntensity: 0.5, // Reduce reflections on the wall
+        color,
+        roughness: 0.82,
+        metalness: 0.0,
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    []
+  );
+  const floorMat = useMemo(
+    () =>
+      new THREE.MeshStandardMaterial({
+        color: "#c8bfb0",
+        roughness: 0.9,
+        metalness: 0.0,
+      }),
+    []
+  );
+  const ceilingMat = useMemo(
+    () =>
+      new THREE.MeshStandardMaterial({
+        color: "#f0ece6",
+        roughness: 0.95,
+        metalness: 0.0,
       }),
     []
   );
 
-  useEffect(() => {
-    if (!scene) return;
-    scene.traverse((obj) => {
-      if (obj instanceof THREE.Mesh) {
-        const name = obj.name.toLowerCase();
-        const isFloor = name.includes("floor") || name.includes("ground");
-        const isFurniture =
-          name.includes("sofa") ||
-          name.includes("couch") ||
-          name.includes("plant") ||
-          name.includes("lamp") ||
-          name.includes("shelf") ||
-          name.includes("cushion") ||
-          name.includes("frame");
-        const isCeiling = name.includes("ceiling") || name.includes("roof");
+  // update wall color reactively without recreating material
+  React.useEffect(() => {
+    wallMat.color.set(wallColor).convertSRGBToLinear();
+    wallMat.needsUpdate = true;
+  }, [wallColor, wallMat]);
 
-        if (!isFloor && !isFurniture && !isCeiling) {
-          obj.material = wallMaterial;
-        }
-      }
-    });
-  }, [scene, wallMaterial]);
-
-  useEffect(() => {
-    // Convert hex to linear space for Three.js lighting math
-    wallMaterial.color.set(wallColor).convertSRGBToLinear();
-  }, [wallColor, wallMaterial]);
+  const W = 6; // room width
+  const D = 5; // room depth
+  const H = 3; // room height
 
   return (
     <group>
-      {/* NEUTRAL LIGHTING: Prevents the walls from looking blue or yellow */}
-      <Environment resolution={256}>
-        <group rotation={[-Math.PI / 3, 0, 0]}>
-          <Lightformer
-            intensity={0.8}
-            rotation-x={Math.PI / 2}
-            position={[0, 5, -9]}
-            scale={[10, 10, 1]}
-          />
-          <Lightformer
-            intensity={2}
-            rotation-y={Math.PI / 2}
-            position={[-5, 1, -1]}
-            scale={[10, 2, 1]}
-          />
-          <Lightformer
-            intensity={2}
-            rotation-y={-Math.PI / 2}
-            position={[10, 1, 0]}
-            scale={[20, 2, 1]}
-          />
-        </group>
-      </Environment>
+      {/* Lighting */}
+      <ambientLight intensity={0.7} />
+      <directionalLight position={[2, 4, 3]} intensity={0.8} castShadow />
+      <directionalLight position={[-3, 3, -2]} intensity={0.3} />
+      {/* Soft ceiling light */}
+      <pointLight position={[0, H - 0.2, 0]} intensity={0.5} color="#fff5e0" />
 
-      <ambientLight intensity={0.6} />
-      <directionalLight position={[5, 8, 5]} intensity={0.5} />
+      {/* Floor */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]} receiveShadow>
+        <planeGeometry args={[W, D]} />
+        <primitive object={floorMat} attach="material" />
+      </mesh>
 
-      <primitive object={scene} />
-      <CameraManager />
-      {/* Shadow optimization: lower blur for mobile speed */}
-      <ContactShadows opacity={0.25} scale={10} blur={1.5} far={1.6} />
+      {/* Ceiling */}
+      <mesh rotation={[Math.PI / 2, 0, 0]} position={[0, H, 0]}>
+        <planeGeometry args={[W, D]} />
+        <primitive object={ceilingMat} attach="material" />
+      </mesh>
+
+      {/* Back wall */}
+      <mesh position={[0, H / 2, -D / 2]} receiveShadow>
+        <planeGeometry args={[W, H]} />
+        <primitive object={wallMat} attach="material" />
+      </mesh>
+
+      {/* Left wall */}
+      <mesh rotation={[0, Math.PI / 2, 0]} position={[-W / 2, H / 2, 0]} receiveShadow>
+        <planeGeometry args={[D, H]} />
+        <primitive object={wallMat} attach="material" />
+      </mesh>
+
+      {/* Right wall */}
+      <mesh rotation={[0, -Math.PI / 2, 0]} position={[W / 2, H / 2, 0]} receiveShadow>
+        <planeGeometry args={[D, H]} />
+        <primitive object={wallMat} attach="material" />
+      </mesh>
+
+      {/* Simple furniture suggestions — couch silhouette */}
+      <mesh position={[0, 0.25, -1.8]} castShadow receiveShadow>
+        <boxGeometry args={[2.4, 0.5, 0.9]} />
+        <meshStandardMaterial color="#7a6e64" roughness={0.9} />
+      </mesh>
+      {/* Couch back */}
+      <mesh position={[0, 0.65, -2.2]} castShadow>
+        <boxGeometry args={[2.4, 0.35, 0.25]} />
+        <meshStandardMaterial color="#7a6e64" roughness={0.9} />
+      </mesh>
+      {/* Coffee table */}
+      <mesh position={[0, 0.2, -0.6]} castShadow receiveShadow>
+        <boxGeometry args={[1.0, 0.08, 0.55]} />
+        <meshStandardMaterial color="#5c4f3a" roughness={0.6} metalness={0.1} />
+      </mesh>
+      {/* Table legs */}
+      {[[-0.42, -0.22], [0.42, -0.22], [-0.42, 0.22], [0.42, 0.22]].map(([x, z], i) => (
+        <mesh key={i} position={[x, 0.1, -0.6 + z]} castShadow>
+          <boxGeometry args={[0.05, 0.2, 0.05]} />
+          <meshStandardMaterial color="#4a3e2c" roughness={0.7} />
+        </mesh>
+      ))}
+
+      <ContactShadows opacity={0.3} scale={8} blur={2} far={1.5} />
     </group>
   );
 }
@@ -126,14 +129,15 @@ export default function MobileColorPicker() {
   const [isCaptured, setIsCaptured] = useState(false);
   const [tapPos, setTapPos] = useState({ x: 0, y: 0 });
 
-  const pickColor = useCallback((e: any) => {
+  const pickColor = useCallback((e: React.MouseEvent | React.TouchEvent) => {
     if (!webcamRef.current || !canvasRef.current) return;
     const video = webcamRef.current.video;
     if (!video || video.readyState !== 4) return;
 
     const rect = video.getBoundingClientRect();
-    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+    const touch = (e as React.TouchEvent).touches?.[0];
+    const clientX = touch ? touch.clientX : (e as React.MouseEvent).clientX;
+    const clientY = touch ? touch.clientY : (e as React.MouseEvent).clientY;
     setTapPos({ x: clientX, y: clientY });
 
     const canvas = canvasRef.current;
@@ -168,25 +172,35 @@ export default function MobileColorPicker() {
             videoConstraints={{ facingMode: "environment" }}
           />
           <canvas ref={canvasRef} className="hidden" />
+
+          {/* Tap hint */}
+          {!isCaptured && (
+            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+              <div className="bg-black/50 text-white text-sm font-semibold px-5 py-3 rounded-2xl backdrop-blur-sm">
+                Tap any surface to pick its color
+              </div>
+            </div>
+          )}
+
           {isCaptured && (
             <div
-              className="absolute w-12 h-12 border-4 border-white rounded-full -translate-x-1/2 -translate-y-1/2 shadow-lg"
+              className="absolute w-12 h-12 border-4 border-white rounded-full -translate-x-1/2 -translate-y-1/2 shadow-lg pointer-events-none"
               style={{ left: tapPos.x, top: tapPos.y, backgroundColor: color }}
             />
           )}
 
-          <div className="absolute bottom-0 left-0 right-0 bg-white p-10 rounded-t-[3.5rem] flex flex-col items-center shadow-2xl">
+          <div className="absolute bottom-0 left-0 right-0 bg-white p-8 rounded-t-[2.5rem] flex flex-col items-center shadow-2xl">
             <div className="flex items-center justify-between w-full max-w-md">
-              <div className="flex items-center gap-5">
+              <div className="flex items-center gap-4">
                 <div
-                  className="w-16 h-16 rounded-2xl border-4"
+                  className="w-14 h-14 rounded-2xl border-2 border-zinc-200 shadow-md transition-colors duration-300"
                   style={{ backgroundColor: color }}
                 />
                 <div>
                   <p className="text-[10px] text-zinc-400 font-bold uppercase tracking-widest">
                     Selected Color
                   </p>
-                  <p className="text-3xl font-mono font-black">
+                  <p className="text-2xl font-mono font-black text-zinc-800">
                     {color.toUpperCase()}
                   </p>
                 </div>
@@ -194,54 +208,58 @@ export default function MobileColorPicker() {
               {isCaptured && (
                 <button
                   onClick={() => setMode("vr")}
-                  className="bg-blue-600 text-white px-10 py-5 rounded-3xl font-bold shadow-xl active:scale-95 transition-transform"
+                  className="bg-violet-600 hover:bg-violet-700 text-white px-6 py-4 rounded-2xl font-bold shadow-xl active:scale-95 transition-all text-sm"
                 >
-                  VR VIEW
+                  Preview Room →
                 </button>
               )}
             </div>
           </div>
         </div>
       ) : (
-        <div className="relative flex-1 bg-[#f3f4f6]">
+        <div className="relative flex-1 bg-[#eae6e0]">
           <button
             onClick={() => setMode("camera")}
-            className="absolute top-8 left-8 z-50 bg-white/90 backdrop-blur text-black px-6 py-3 rounded-2xl font-bold shadow-lg"
+            className="absolute top-6 left-6 z-50 bg-white/90 backdrop-blur text-black px-5 py-2.5 rounded-xl font-bold shadow-lg text-sm"
           >
-            ← RETAKE
+            ← Retake
           </button>
 
           <Canvas
-            // AgX ToneMapping is MUCH better for color accuracy than the default
             gl={{
-              antialias: false,
+              antialias: true,
               powerPreference: "high-performance",
-              toneMapping: THREE.AgXToneMapping,
+              toneMapping: THREE.ACESFilmicToneMapping,
               outputColorSpace: THREE.SRGBColorSpace,
             }}
             dpr={[1, 1.5]}
-            camera={{ fov: 45 }}
+            camera={{ fov: 55, position: [2.5, 1.6, 2.8] }}
+            shadows
           >
-            <Suspense fallback={<Html center>Optimizing Scene...</Html>}>
-              <Scene wallColor={color} />
+            <Suspense fallback={null}>
+              <Room wallColor={color} />
             </Suspense>
             <OrbitControls
               makeDefault
-              minPolarAngle={Math.PI / 4}
-              maxPolarAngle={Math.PI / 1.5}
+              target={[0, 1.2, -1]}
+              minPolarAngle={Math.PI / 6}
+              maxPolarAngle={Math.PI / 2.1}
+              minDistance={1.5}
+              maxDistance={5}
+              enablePan={false}
             />
           </Canvas>
 
-          <div className="absolute bottom-10 left-1/2 -translate-x-1/2 bg-white/90 backdrop-blur px-8 py-4 rounded-3xl shadow-xl border border-white">
-            <div className="flex items-center gap-3">
-              <div
-                className="w-4 h-4 rounded-full"
-                style={{ backgroundColor: color }}
-              />
-              <span className="font-bold text-black uppercase text-sm tracking-tighter">
-                Paint: {color}
-              </span>
-            </div>
+          {/* Color label */}
+          <div className="absolute bottom-8 left-1/2 -translate-x-1/2 bg-white/90 backdrop-blur-sm px-6 py-3 rounded-2xl shadow-xl border border-white/50 flex items-center gap-3">
+            <div
+              className="w-5 h-5 rounded-full border border-zinc-200 shadow-sm"
+              style={{ backgroundColor: color }}
+            />
+            <span className="font-bold text-zinc-800 text-sm font-mono">
+              {color.toUpperCase()}
+            </span>
+            <span className="text-zinc-400 text-xs font-medium">· Drag to explore</span>
           </div>
         </div>
       )}
